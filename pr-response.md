@@ -16,9 +16,11 @@
 **How I verified:** Ran `pytest tests/test_watchlist.py -v` using the project's `.venv` interpreter — 1 passed.
 
 ## Comment 4 — Default visibility
-**My position:**
-**Reasoning:**
-**Tradeoff acknowledged:**
+**My position:** I'm keeping `public=True` as the default for `WatchlistEntry`.
+
+**Reasoning:** CineLog is described in the README as "a community film tracking app" — the core value of the product is social: seeing what other users are watching, rating, and planning to watch. A watchlist that's private by default is invisible by default, which works against that goal. If most users never touch the visibility setting (which is the common case for any default), a private-by-default watchlist would mean the feature quietly fails to contribute to the discovery/community experience it's meant to support. I'm optimizing for the "browse what people are excited to watch" behavior — low-friction sharing where a user has to actively opt out of visibility rather than opt in. This also keeps `WatchlistEntry` consistent with the rest of the app's posture: nothing else in the collection feature is gated behind a privacy flag, so introducing a private-by-default watchlist would be an inconsistent, unannounced departure from how the rest of the user's activity is treated.
+
+**Tradeoff acknowledged:** The real cost is that a watchlist is a more exposed signal than a collection. A `CollectionEntry` reflects a film someone already watched and (optionally) rated — a completed, considered action. A `WatchlistEntry` reflects intent: films someone hasn't seen yet, which can surface genre preferences, guilty pleasures, or viewing habits the user hasn't decided they're comfortable sharing yet. A user who doesn't realize the default is public could have that list visible before they've thought about who can see it — that's a real privacy cost, not a hypothetical one. If we had evidence that users are surprised by this (e.g., support tickets, or user research showing discomfort), I'd revisit the default rather than treat this decision as final. For now, given the product's social framing and no such signal yet, I'm choosing the default that serves the core discovery use case, with the tradeoff being the un-anticipated visibility risk for users who never check the setting.
 
 ## Comment 5 — Sort order
 **My position:**
