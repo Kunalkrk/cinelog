@@ -12,8 +12,8 @@
 **How I verified:** Read through `add_to_collection()` in `collection_service.py` to confirm the pattern (exception class + `.filter_by(...).first()` check before insert) and mirrored it exactly.
 
 ## Comment 3 — Missing test
-**What I did:**
-**How I verified:**
+**What I did:** Created `tests/test_watchlist.py`, mirroring `test_add_to_collection_nonexistent_film_raises` from `test_collection.py`. It reuses the same `app` and `sample_user` fixtures and adds `test_add_to_watchlist_nonexistent_film_raises`, which asserts that calling `add_to_watchlist()` with a film_id that doesn't exist raises `FilmNotFoundError`.
+**How I verified:** Ran `pytest tests/test_watchlist.py -v` using the project's `.venv` interpreter — 1 passed.
 
 ## Comment 4 — Default visibility
 **My position:**
