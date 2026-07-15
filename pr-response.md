@@ -1,7 +1,14 @@
 # PR Response Doc — CineLog Watchlist Feature
 
 ## AI Usage
-<!-- Fill in at the end — how you used AI tools during this project -->
+I used Claude Code (an AI coding assistant) throughout this project, in a few distinct ways:
+
+- **Codebase orientation before touching anything.** Before addressing any review comment, I had it read `models.py`, `services/collection_service.py`, and `tests/test_collection.py` and summarize the naming conventions, the deduplication pattern, and the test fixture structure — so that the watchlist fixes would match the existing codebase rather than introduce a new style.
+- **Pattern-matching for Comment 2 (deduplication).** Rather than inventing a dedup mechanism from scratch, I asked it to compare `add_to_collection()` against the watchlist code and mirror the exact same pre-check-then-raise pattern (custom exception + `.filter_by(...).first()` check before insert), instead of e.g. relying only on a DB-level constraint.
+- **Root-cause diagnosis for Comment 6 (rebase).** `git rebase origin/main` reported zero conflicts, which could easily have been read as "nothing to check." I had it diff the individual upstream commits instead, which surfaced that main's UUID-migration commit had silently deleted the `WatchlistEntry` class entirely (since main never had the watchlist feature) — a logical break with no textual conflict to flag it. That diagnosis is what `models.py`'s fix was based on.
+- **Commit hygiene audit.** I asked it to evaluate the full commit history against `CONTRIBUTING.md`'s format and "one logical change per commit" rules. It correctly identified `ec90edb` ("added watchlist model and endpoint fixed a bug more changes") as matching CONTRIBUTING.md's own listed "Not acceptable" examples, and — importantly — flagged its *own* earlier commit (`5b514b3`) as bundling four review-comment responses together. I had it split both via a scripted interactive rebase.
+- **Stress-testing the Comment 5 argument.** When drafting the sort-order response, I asked it to engage directly with the reviewer thread rather than just pick a direction. That's how it caught something I hadn't noticed myself: the maintainer's stated reasoning ("most users want to see what they added recently") and Dani-risingBW's reasoning ("find the oldest one to finally watch") actually argue for *opposite* sort directions, even though the thread reads as agreement. That tension became the core of the final argument — I directed it to side with Dani's framing (oldest-first, since a watchlist is a backlog, not a feed) rather than the maintainer's literal wording, but the catch itself came from having it read both comments closely side by side rather than skimming for the general sentiment ("date-added, not alphabetical").
+- **Comment 4 fact-checking.** For the default-visibility argument, I had it draft the position, but I pushed it to ground the "CineLog is a community/discovery app" premise in an actual source rather than an assumption — it pointed to the literal README wording ("a community film tracking app") rather than asserting that framing on its own. The tradeoff paragraph (watchlist reveals intent vs. a collection's completed, considered action) was accepted close to as drafted, since it accurately named the real risk rather than a generic privacy disclaimer.
 
 ## Comment 1 — Rename
 **What I did:** Renamed `save_to_watchlist()` to `add_to_watchlist()` in `services/watchlist_service.py` to match the project's `verb_to_noun` convention (`add_to_collection()`, `remove_from_collection()`). Updated the one call site in `routes/watchlist/watchlist.py` (both the import and the function call).
@@ -40,5 +47,65 @@ I'm siding with Dani-risingBW's framing over the maintainer's original wording, 
 
 **How I verified no conflict remains:** Ran the full suite (`pytest tests/ -v`) — all 5 tests pass, including the Comment 3 nonexistent-film test. Also ran a manual end-to-end check creating a real `User`/`Film` with generated UUIDs and calling `add_to_watchlist()` twice: the first call succeeds and returns a UUID-keyed entry, the second correctly raises `AlreadyInWatchlistError` — confirming Comment 2's dedup logic still works against UUID ids post-rebase. Checked `git log --merges --oneline feature/watchlist`: the only merge commit in the ancestry is `bbe206c`, which is pre-existing on `main` itself (from an unrelated `.gitignore` PR) and not something this rebase introduced — `git rebase` (as opposed to `git merge origin/main`) guarantees we didn't add any merge commits of our own.
 
+The final, cleaned-up linear history (after also splitting `ec90edb` and the doc commit into properly typed, single-purpose commits):
+
+![Commit history](commit_history.png)
+
 ## PR Description
-<!-- Written at the end — feature overview, design decisions, manual testing steps -->
+
+### What this does
+Adds a watchlist feature to CineLog. Users can save films they intend to watch later — separate from their collection, which tracks films they've already watched and rated. This adds a `WatchlistEntry` model, service functions (`add_to_watchlist()`, `get_watchlist()`), and two endpoints: one to add a film to a user's watchlist, and one to view it.
+
+### Design decisions
+1. **Default visibility (`public=True`)** — Watchlists default to public. CineLog is a community/discovery-oriented app, and a private-by-default watchlist would be invisible by default for the (likely majority of) users who never touch the setting, undermining the social/discovery value the feature is meant to add. The tradeoff: a watchlist exposes *intent* (unwatched, undecided preferences), which is a more exposed signal than a completed, already-rated `CollectionEntry` — a user who never checks the setting could have that exposed before they've thought about who can see it. Full reasoning in Comment 4 above.
+2. **Sort order (oldest-added first)** — `get_watchlist()` sorts by `date_added` ascending, not descending. A watchlist is a backlog meant to be cleared, not a feed meant to showcase what's freshest — oldest-first surfaces the films that have been sitting the longest, prompting "what should I finally watch," rather than letting old, forgotten entries sink out of view as new ones are added. Full reasoning, including engagement with the reviewer discussion, in Comment 5 above.
+
+### Known issues (pre-existing, not introduced by this PR's six review-comment fixes)
+- `GET /watchlist/<user_id>` currently raises `AttributeError`. `WatchlistEntry` has no relationship to `Film` defined in `models.py` (only `CollectionEntry` gets a `backref="film"` from `Film.collection_entries`), so `entry.film` in `get_watchlist()` fails. This bug predates all six review comments — it was present in the original `ec90edb` commit's implementation.
+- Neither `FilmNotFoundError` nor `AlreadyInWatchlistError` is currently caught in `routes/watchlist/watchlist.py`, so `POST /watchlist/<user_id>/add` returns a raw 500 for the not-found and duplicate cases instead of a clean 404/409, unlike the analogous handling in `routes/collection.py`.
+
+### How to test this manually
+There's no endpoint to create users or films (films are seeded; see `routes/films.py`), so steps 2 uses a Python shell directly.
+
+1. Start the app: `python app.py` (or, from this repo, `./.venv/Scripts/python.exe app.py` on Windows).
+2. In a separate Python shell, create a test user and film directly, and note their generated UUIDs:
+   ```python
+   from app import create_app, db
+   from models import User, Film
+
+   app = create_app()
+   with app.app_context():
+       user = User(username="demo", email="demo@example.com")
+       film = Film(title="Arrival", year=2016)
+       db.session.add_all([user, film])
+       db.session.commit()
+       print("user_id:", user.id)
+       print("film_id:", film.id)
+   ```
+3. Add the film to the watchlist and confirm the default-visibility decision:
+   ```bash
+   curl -X POST http://localhost:5000/watchlist/<user_id>/add \
+     -H "Content-Type: application/json" \
+     -d '{"film_id": "<film_id>"}'
+   ```
+   Expect `201` with a JSON body where `"public": true`.
+4. Confirm deduplication (Comment 2) by repeating the exact same request. Expect a `500` right now (see "Known issues" above — the route doesn't catch `AlreadyInWatchlistError` yet). To confirm the duplicate is actually rejected (not silently double-inserted), check the service layer directly instead:
+   ```python
+   from services.watchlist_service import add_to_watchlist, AlreadyInWatchlistError
+   with app.app_context():
+       add_to_watchlist(user_id="<user_id>", film_id="<film_id>")  # should raise AlreadyInWatchlistError
+   ```
+5. Confirm sort order (Comment 5). Since `GET /watchlist/<user_id>` currently errors (see "Known issues"), verify the ordering directly against the database instead of through the endpoint:
+   ```python
+   from models import WatchlistEntry
+   with app.app_context():
+       entries = (
+           WatchlistEntry.query
+           .filter_by(user_id="<user_id>")
+           .order_by(WatchlistEntry.date_added.asc())
+           .all()
+       )
+       print([(e.film_id, e.date_added) for e in entries])
+   ```
+   Add a second film to the watchlist and re-run this query — the film added first should appear first in the results (oldest-added order), not alphabetically and not most-recent-first.
+6. Run the automated test suite: `pytest tests/ -v` — expect `5 passed`, including `test_add_to_watchlist_nonexistent_film_raises` from Comment 3.
